@@ -69,6 +69,8 @@ interface ScanHistoryItem {
   biopsyStatus?: string;
   asymmetryIndex?: number;
   jddSubmitted?: boolean;
+  lesionDetected?: boolean;
+  clinicianName?: string;
 }
 
 export default function DermoAIPage() {
@@ -102,6 +104,8 @@ export default function DermoAIPage() {
 
   // Database settings & status
   const [webhookUrl, setWebhookUrl] = useState("https://script.google.com/macros/s/AKfycbzz7flXhvHQxUwoWWkexNals42mvNdVMkFutKHyb6qGeXR2vqU8mSuLK5jdWrgo_BsEpQ/exec");
+  const [clinicianName, setClinicianName] = useState("");
+  const [lesionDetected, setLesionDetected] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -160,6 +164,11 @@ export default function DermoAIPage() {
         setWebhookUrl(storedWebhook);
       } else {
         setWebhookUrl("https://script.google.com/macros/s/AKfycbzz7flXhvHQxUwoWWkexNals42mvNdVMkFutKHyb6qGeXR2vqU8mSuLK5jdWrgo_BsEpQ/exec");
+      }
+
+      const storedName = localStorage.getItem("dermoai_clinician_name");
+      if (storedName) {
+        setClinicianName(storedName);
       }
     }
   }, []);
@@ -388,7 +397,10 @@ export default function DermoAIPage() {
       }
 
       let computedAsymmetry = 0;
-      if (count > 50) { // Ensure there is an actual lesion detected
+      const isLesion = count > 50;
+      setLesionDetected(isLesion);
+
+      if (isLesion) { // Ensure there is an actual lesion detected
         lesionMaskRef.current = mask;
         const cx = Math.round(sumX / count);
         const cy = Math.round(sumY / count);
@@ -494,7 +506,9 @@ export default function DermoAIPage() {
           patientSex: "",
           lesionLocation: "",
           clinicalNotes: "",
-          biopsyStatus: "not_biopsied"
+          biopsyStatus: "not_biopsied",
+          lesionDetected: isLesion,
+          clinicianName: clinicianName || undefined
         };
 
         // Clear input form fields for the new scan
@@ -595,7 +609,8 @@ export default function DermoAIPage() {
           patientSex,
           lesionLocation,
           clinicalNotes,
-          biopsyStatus
+          biopsyStatus,
+          clinicianName: clinicianName || undefined
         };
       }
       return item;
@@ -634,6 +649,10 @@ export default function DermoAIPage() {
       setClinicalNotes(item.clinicalNotes || "");
       setBiopsyStatus(item.biopsyStatus || "not_biopsied");
       setAsymmetryIndex(item.asymmetryIndex ?? null);
+      setLesionDetected(item.lesionDetected !== false);
+      if (item.clinicianName) {
+        setClinicianName(item.clinicianName);
+      }
       
       // Clear mask ref since it's an old image loaded from thumbnail
       lesionMaskRef.current = null;
@@ -665,6 +684,8 @@ export default function DermoAIPage() {
     try {
       const payload = {
         authToken: "wraikat_dermoai_secure_2026",
+        clinicianName: clinicianName || "unknown",
+        lesionDetected: item.lesionDetected !== false,
         caseId: item.id,
         date: item.date,
         prediction: item.prediction,
@@ -732,6 +753,8 @@ export default function DermoAIPage() {
     if (!item) return;
 
     const payload = {
+      clinicianName: clinicianName || "unknown",
+      lesionDetected: item.lesionDetected !== false,
       caseId: item.id,
       date: item.date,
       prediction: item.prediction,
@@ -1254,26 +1277,42 @@ export default function DermoAIPage() {
                 />
               </div>
 
+              {/* Quality Alert if no lesion detected */}
+              {!lesionDetected && (
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-start gap-2.5 leading-relaxed">
+                  <span className="text-sm mt-0.5">⚠️</span>
+                  <div>
+                    {lang === "ar"
+                      ? "تنبيه الجودة: لم يتم اكتشاف آفة جلدية صالحة في هذه الصورة. يرجى محاذاة العدسة وإعادة المحاولة. تم إيقاف الحفظ والمشاركة لحماية جودة قاعدة البيانات."
+                      : lang === "tr"
+                        ? "Kalite Uyarısı: Bu resimde geçerli bir lezyon tespit edilemedi. Lütfen lensi hizalayın. Veritabanı kalitesini korumak için kaydetme ve gönderme engellendi."
+                        : "Quality Alert: No valid lesion detected in this image. Please align your lens. Saving and database submissions are disabled to maintain database quality."}
+                  </div>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
                 <button 
                   onClick={saveCaseDetails}
-                  className="py-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 font-bold text-xs transition"
+                  disabled={!lesionDetected}
+                  className="py-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:bg-slate-950/20 disabled:text-slate-600 disabled:border-slate-950/20 font-bold text-xs transition cursor-pointer disabled:cursor-not-allowed"
                 >
                   💾 {lang === "ar" ? "حفظ محلياً" : lang === "tr" ? "Yerel Kaydet" : "Save Locally"}
                 </button>
 
                 <button 
                   onClick={downloadJsonPackage}
-                  className="py-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 font-bold text-xs transition"
+                  disabled={!lesionDetected}
+                  className="py-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:bg-slate-950/20 disabled:text-slate-600 disabled:border-slate-950/20 font-bold text-xs transition cursor-pointer disabled:cursor-not-allowed"
                 >
                   📥 {lang === "ar" ? "تحميل ملف الحالة" : lang === "tr" ? "Dosya İndir" : "Export JSON"}
                 </button>
 
                 <button 
                   onClick={submitCaseToDatabase}
-                  disabled={isSubmitting}
-                  className="py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:bg-slate-800 font-bold text-xs transition shadow-md shadow-teal-500/10"
+                  disabled={isSubmitting || !lesionDetected}
+                  className="py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:bg-slate-900 disabled:text-slate-600 disabled:border-slate-900/40 font-bold text-xs transition shadow-md shadow-teal-500/10 cursor-pointer disabled:cursor-not-allowed"
                 >
                   🚀 {isSubmitting 
                     ? (lang === "ar" ? "جاري الإرسال..." : "Sending...") 
@@ -1323,6 +1362,23 @@ export default function DermoAIPage() {
                 }}
                 placeholder="https://script.google.com/macros/s/.../exec"
                 className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-xs outline-none transition font-mono"
+              />
+            </div>
+            
+            <div className="flex flex-col gap-1.5 mt-2">
+              <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                {lang === "ar" ? "اسم الطبيب / معرّف عيادتك" : lang === "tr" ? "Hekim Adı / Klinik Kimliği" : "Clinician Name / Clinic ID"}
+              </label>
+              <input 
+                type="text" 
+                value={clinicianName}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setClinicianName(val);
+                  localStorage.setItem("dermoai_clinician_name", val);
+                }}
+                placeholder="e.g. Dr. Osama Alwreikat"
+                className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-xs outline-none transition"
               />
             </div>
           </div>
