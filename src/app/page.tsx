@@ -104,6 +104,7 @@ export default function DermoAIPage() {
 
   // Database settings & status
   const [webhookUrl, setWebhookUrl] = useState("https://script.google.com/macros/s/AKfycbzz7flXhvHQxUwoWWkexNals42mvNdVMkFutKHyb6qGeXR2vqU8mSuLK5jdWrgo_BsEpQ/exec");
+  const [showWebhookInput, setShowWebhookInput] = useState(false);
   const [clinicianName, setClinicianName] = useState("");
   const [lesionDetected, setLesionDetected] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1338,34 +1339,32 @@ export default function DermoAIPage() {
           
           {/* Database Webhook Settings */}
           <div className="bg-slate-900/60 border border-slate-900 rounded-3xl p-5 shadow-xl backdrop-blur-md flex flex-col gap-3">
-            <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
-              ⚙️ {lang === "ar" ? "إعدادات قاعدة البيانات المشتركة" : lang === "tr" ? "Ortak Veritabanı Ayarları" : "Database Webhook Settings"}
-            </h3>
-            <p className="text-[10px] text-slate-500 leading-normal">
-              {lang === "ar" 
-                ? "أدخل رابط Google Apps Script Webhook لإرسال الحالات ومشاركتها مع قاعدة البيانات المشتركة في Google Drive." 
-                : lang === "tr"
-                  ? "Tanı vakalarını Google Drive'daki ortak veritabanına göndermek için Google Apps Script Webhook URL'nizi girin."
-                  : "Enter your Google Apps Script Webhook URL to save submitted cases directly into your Google Drive."}
-            </p>
-            <div className="flex flex-col gap-1.5 mt-1">
-              <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
-                {lang === "ar" ? "رابط Webhook (Google Script URL)" : "Google Apps Script URL"}
-              </label>
-              <input 
-                type="text" 
-                value={webhookUrl}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setWebhookUrl(val);
-                  localStorage.setItem("dermoai_jdd_webhook", val);
-                }}
-                placeholder="https://script.google.com/macros/s/.../exec"
-                className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-xs outline-none transition font-mono"
-              />
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                ⚙️ {lang === "ar" ? "إعدادات قاعدة البيانات" : lang === "tr" ? "Veritabanı Ayarları" : "Database Settings"}
+              </h3>
+              <button 
+                onClick={() => setShowWebhookInput(!showWebhookInput)}
+                className="text-[10px] text-slate-500 hover:text-slate-300 font-bold transition cursor-pointer select-none"
+              >
+                {showWebhookInput ? (lang === "ar" ? "إخفاء" : "Hide") : (lang === "ar" ? "تعديل" : "Edit")}
+              </button>
             </div>
-            
-            <div className="flex flex-col gap-1.5 mt-2">
+
+            {/* Connection Status Badge */}
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-emerald-300 text-xs font-bold leading-none">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>
+                {lang === "ar" 
+                  ? "متصل بقاعدة البيانات المشتركة" 
+                  : lang === "tr"
+                    ? "Ortak Veritabanına Bağlandı"
+                    : "Connected to JDD Database"}
+              </span>
+            </div>
+
+            {/* Clinician Name ID Input */}
+            <div className="flex flex-col gap-1.5 mt-1">
               <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                 {lang === "ar" ? "اسم الطبيب / معرّف عيادتك" : lang === "tr" ? "Hekim Adı / Klinik Kimliği" : "Clinician Name / Clinic ID"}
               </label>
@@ -1381,6 +1380,26 @@ export default function DermoAIPage() {
                 className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-xs outline-none transition"
               />
             </div>
+
+            {/* Hidden Webhook Input (Visible only if clicked Edit) */}
+            {showWebhookInput && (
+              <div className="flex flex-col gap-1.5 mt-2 pt-2 border-t border-slate-800 animate-fade-in">
+                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                  {lang === "ar" ? "رابط Webhook (Google Script URL)" : "Google Apps Script URL"}
+                </label>
+                <input 
+                  type="text" 
+                  value={webhookUrl}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setWebhookUrl(val);
+                    localStorage.setItem("dermoai_jdd_webhook", val);
+                  }}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-[10px] outline-none transition font-mono"
+                />
+              </div>
+            )}
           </div>
 
           {/* History Panel */}
