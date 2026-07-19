@@ -61,6 +61,14 @@ interface ScanHistoryItem {
   prediction: string;
   confidence: number;
   imageThumbnail: string; // Base64 thumbnail
+  patientId?: string;
+  patientAge?: string;
+  patientSex?: "male" | "female" | "";
+  lesionLocation?: string;
+  clinicalNotes?: string;
+  biopsyStatus?: string;
+  asymmetryIndex?: number;
+  jddSubmitted?: boolean;
 }
 
 export default function DermoAIPage() {
@@ -78,8 +86,28 @@ export default function DermoAIPage() {
     top3: Array<{ condition: string; confidence: number }>;
   } | null>(null);
   const [history, setHistory] = useState<ScanHistoryItem[]>([]);
+  const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  // Clinician Documentation States
+  const [patientId, setPatientId] = useState("");
+  const [patientAge, setPatientAge] = useState("");
+  const [patientSex, setPatientSex] = useState<"male" | "female" | "">("");
+  const [lesionLocation, setLesionLocation] = useState("");
+  const [clinicalNotes, setClinicalNotes] = useState("");
+  const [biopsyStatus, setBiopsyStatus] = useState("not_biopsied");
+  const [asymmetryIndex, setAsymmetryIndex] = useState<number | null>(null);
+  const [showContour, setShowContour] = useState(true);
+
+  // Database settings & status
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitMessage, setSubmitMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Refs
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const lesionMaskRef = useRef<Uint8Array | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -115,7 +143,7 @@ export default function DermoAIPage() {
     }
   }, []);
 
-  // Load Scan History from localStorage on client-side mount
+  // Load Scan History and Webhook URL from localStorage on client-side mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       const stored = localStorage.getItem("dermoai_scan_history");
@@ -126,8 +154,53 @@ export default function DermoAIPage() {
           console.error("Failed to parse history:", e);
         }
       }
+
+      const storedWebhook = localStorage.getItem("dermoai_jdd_webhook");
+      if (storedWebhook) {
+        setWebhookUrl(storedWebhook);
+      }
     }
   }, []);
+
+  // Draw the segmented border contour on top of the image
+  useEffect(() => {
+    if (showContour && capturedImage && overlayCanvasRef.current && lesionMaskRef.current) {
+      const canvas = overlayCanvasRef.current;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        // Clear first
+        ctx.clearRect(0, 0, 224, 224);
+        
+        // Draw outline glowing contour
+        ctx.strokeStyle = "#0d9488"; // Teal-600
+        ctx.lineWidth = 3;
+        ctx.shadowColor = "#2dd4bf"; // Teal-400
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        
+        const mask = lesionMaskRef.current;
+        const width = 224;
+        const height = 224;
+        
+        for (let y = 1; y < height - 1; y++) {
+          for (let x = 1; x < width - 1; x++) {
+            if (mask[y * width + x] === 1) {
+              const isBorder = 
+                mask[(y - 1) * width + x] === 0 || 
+                mask[(y + 1) * width + x] === 0 || 
+                mask[y * width + (x - 1)] === 0 || 
+                mask[y * width + (x + 1)] === 0;
+              
+              if (isBorder) {
+                ctx.rect(x, y, 1.5, 1.5);
+              }
+            }
+          }
+        }
+        ctx.stroke();
+      }
+    }
+  }, [showContour, capturedImage, results]);
 
   // Initialize LiteRT.js client-side
   useEffect(() => {
@@ -274,12 +347,81 @@ export default function DermoAIPage() {
       // mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
       const imgData = ctx.getImageData(0, 0, 224, 224);
       const data = imgData.data; // RGBA values
-      const floatData = new Float32Array(1 * 224 * 224 * 3); // HWC format
 
+      // 2. Perform Lesion Segmentation & Asymmetry Calculation
+      // Calculate baseline skin brightness from the outer 20-pixel border
+      let borderSum = 0;
+      let borderCount = 0;
+      const width = 224;
+      const height = 224;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (x < 20 || x > width - 20 || y < 20 || y > height - 20) {
+            const idx = (y * width + x) * 4;
+            const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+            borderSum += gray;
+            borderCount++;
+          }
+        }
+      }
+      const baselineSkin = borderSum / borderCount;
+      const threshold = baselineSkin * 0.85; // 85% of normal skin intensity represents the dark lesion
+
+      // Compute lesion mask and center of mass
+      let sumX = 0;
+      let sumY = 0;
+      let count = 0;
+      const mask = new Uint8Array(width * height);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4;
+          const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+          if (gray < threshold) {
+            mask[y * width + x] = 1;
+            sumX += x;
+            sumY += y;
+            count++;
+          }
+        }
+      }
+
+      let computedAsymmetry = 0;
+      if (count > 50) { // Ensure there is an actual lesion detected
+        lesionMaskRef.current = mask;
+        const cx = Math.round(sumX / count);
+        const cy = Math.round(sumY / count);
+
+        let nonOverlapCount = 0;
+        let unionCount = 0;
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            if (mask[y * width + x] === 1) {
+              unionCount++;
+              const hx = 2 * cx - x;
+              if (hx < 0 || hx >= width || mask[y * width + hx] !== 1) {
+                nonOverlapCount++;
+              }
+              const vy = 2 * cy - y;
+              if (vy < 0 || vy >= height || mask[vy * width + x] !== 1) {
+                nonOverlapCount++;
+              }
+            }
+          }
+        }
+        computedAsymmetry = unionCount > 0 
+          ? Math.min(100, Math.round((nonOverlapCount / (unionCount * 2)) * 100))
+          : 0;
+        setAsymmetryIndex(computedAsymmetry);
+      } else {
+        lesionMaskRef.current = null;
+        setAsymmetryIndex(null);
+      }
+
+      // 3. Preprocess pixels (HWC format and normalisation)
+      const floatData = new Float32Array(1 * 224 * 224 * 3); 
       const mean = [0.485, 0.456, 0.406];
       const std = [0.229, 0.224, 0.225];
 
-      // Extract channels and structure into HWC format
       for (let i = 0; i < 224 * 224; i++) {
         const r = data[i * 4] / 255.0;
         const g = data[i * 4 + 1] / 255.0;
@@ -343,8 +485,25 @@ export default function DermoAIPage() {
           }),
           prediction,
           confidence,
-          imageThumbnail: thumbnailData
+          imageThumbnail: thumbnailData,
+          asymmetryIndex: computedAsymmetry || undefined,
+          patientId: "",
+          patientAge: "",
+          patientSex: "",
+          lesionLocation: "",
+          clinicalNotes: "",
+          biopsyStatus: "not_biopsied"
         };
+
+        // Clear input form fields for the new scan
+        setPatientId("");
+        setPatientAge("");
+        setPatientSex("");
+        setLesionLocation("");
+        setClinicalNotes("");
+        setBiopsyStatus("not_biopsied");
+        setSubmitMessage(null);
+        setCurrentHistoryId(newHistoryItem.id);
 
         const updatedHistory = [newHistoryItem, ...history.slice(0, 19)]; // Limit to last 20 items
         setHistory(updatedHistory);
@@ -419,6 +578,178 @@ export default function DermoAIPage() {
       setHistory([]);
       localStorage.removeItem("dermoai_scan_history");
     }
+  };
+
+  // Save/Update case details in local Scan History
+  const saveCaseDetails = () => {
+    if (!currentHistoryId) return;
+
+    const updatedHistory = history.map(item => {
+      if (item.id === currentHistoryId) {
+        return {
+          ...item,
+          patientId,
+          patientAge,
+          patientSex,
+          lesionLocation,
+          clinicalNotes,
+          biopsyStatus
+        };
+      }
+      return item;
+    });
+
+    setHistory(updatedHistory);
+    localStorage.setItem("dermoai_scan_history", JSON.stringify(updatedHistory));
+    
+    alert(
+      lang === "ar" 
+        ? "تم حفظ تفاصيل الحالة بنجاح!" 
+        : lang === "tr" 
+          ? "Vaka detayları başarıyla kaydedildi!" 
+          : "Case details saved successfully!"
+    );
+  };
+
+  // Load a historic case into the active view
+  const selectHistoryItem = (id: string) => {
+    const item = history.find(h => h.id === id);
+    if (item) {
+      setCurrentHistoryId(item.id);
+      setResults({
+        prediction: item.prediction,
+        confidence: item.confidence,
+        top3: [
+          { condition: item.prediction, confidence: item.confidence },
+          ...CONDITIONS.filter(c => c.id !== item.prediction).slice(0, 2).map(c => ({ condition: c.id, confidence: 0 }))
+        ]
+      });
+      setCapturedImage(item.imageThumbnail);
+      setPatientId(item.patientId || "");
+      setPatientAge(item.patientAge || "");
+      setPatientSex(item.patientSex || "");
+      setLesionLocation(item.lesionLocation || "");
+      setClinicalNotes(item.clinicalNotes || "");
+      setBiopsyStatus(item.biopsyStatus || "not_biopsied");
+      setAsymmetryIndex(item.asymmetryIndex ?? null);
+      
+      // Clear mask ref since it's an old image loaded from thumbnail
+      lesionMaskRef.current = null;
+      setSubmitMessage(null);
+    }
+  };
+
+  // Submit case details to Google Apps Script Webhook
+  const submitCaseToDatabase = async () => {
+    if (!currentHistoryId) return;
+    const item = history.find(h => h.id === currentHistoryId);
+    if (!item) return;
+
+    if (!webhookUrl) {
+      setSubmitMessage({
+        type: "error",
+        text: lang === "ar" 
+          ? "يرجى إدخال رابط Webhook الخاص بك في قسم الإعدادات أولاً." 
+          : lang === "tr" 
+            ? "Lütfen önce ayarlardan Webhook URL'nizi girin." 
+            : "Please enter your Webhook URL in settings first."
+      });
+      return;
+    }
+
+    setIsSubmitting(true);
+    setSubmitMessage(null);
+
+    try {
+      const payload = {
+        caseId: item.id,
+        date: item.date,
+        prediction: item.prediction,
+        confidence: item.confidence,
+        asymmetryIndex: item.asymmetryIndex || asymmetryIndex,
+        patientId,
+        patientAge,
+        patientSex,
+        lesionLocation,
+        clinicalNotes,
+        biopsyStatus,
+        imageThumbnail: item.imageThumbnail
+      };
+
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        mode: "cors",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        setSubmitMessage({
+          type: "success",
+          text: lang === "ar" 
+            ? "تم إرسال الحالة لقاعدة البيانات بنجاح!" 
+            : lang === "tr" 
+              ? "Vaka veritabanına başarıyla gönderildi!" 
+              : "Case successfully sent to database!"
+        });
+
+        // Mark as submitted in local state & localStorage
+        const updatedHistory = history.map(h => {
+          if (h.id === currentHistoryId) {
+            return { ...h, jddSubmitted: true };
+          }
+          return h;
+        });
+        setHistory(updatedHistory);
+        localStorage.setItem("dermoai_scan_history", JSON.stringify(updatedHistory));
+      } else {
+        throw new Error("HTTP error " + response.status);
+      }
+    } catch (err) {
+      console.error("Submission error:", err);
+      setSubmitMessage({
+        type: "error",
+        text: lang === "ar" 
+          ? "فشل الإرسال. يرجى التحقق من رابط Webhook والاتصال بالإنترنت." 
+          : lang === "tr" 
+            ? "Gönderim hatası. Lütfen Webhook URL'sini ve internetinizi kontrol edin." 
+            : "Submission error. Please check Webhook URL and internet connection."
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Download case package as local JSON file
+  const downloadJsonPackage = () => {
+    if (!currentHistoryId) return;
+    const item = history.find(h => h.id === currentHistoryId);
+    if (!item) return;
+
+    const payload = {
+      caseId: item.id,
+      date: item.date,
+      prediction: item.prediction,
+      confidence: item.confidence,
+      asymmetryIndex: item.asymmetryIndex || asymmetryIndex,
+      patientId,
+      patientAge,
+      patientSex,
+      lesionLocation,
+      clinicalNotes,
+      biopsyStatus,
+      imageThumbnail: item.imageThumbnail
+    };
+
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(payload, null, 2));
+    const downloadAnchor = document.createElement("a");
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `dermoai_case_${item.id}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
   };
 
   return (
@@ -547,6 +878,21 @@ export default function DermoAIPage() {
                 <span className="w-2.5 h-2.5 rounded-full bg-teal-500 animate-pulse" />
                 {lang === "ar" ? "عدسة الفحص المباشر" : "Dermoscopy Viewfinder"}
               </span>
+
+              {capturedImage && results && (
+                <label className="flex items-center gap-2 text-xs font-bold text-slate-300 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={showContour}
+                    onChange={(e) => setShowContour(e.target.checked)}
+                    className="rounded border-slate-800 text-teal-600 focus:ring-teal-500 bg-slate-950 w-4 h-4"
+                  />
+                  <span>
+                    {lang === "ar" ? "تحديد حدود الآفة (AI)" : lang === "tr" ? "Lezyon Sınırı (AI)" : "Lesion Contour (AI)"}
+                  </span>
+                </label>
+              )}
+
               {cameraActive && devices.length > 1 && (
                 <select 
                   onChange={handleDeviceChange}
@@ -578,11 +924,21 @@ export default function DermoAIPage() {
 
               {/* Static Captured Image */}
               {capturedImage && (
-                <img 
-                  src={capturedImage} 
-                  alt="Captured skin lesion" 
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
+                <>
+                  <img 
+                    src={capturedImage} 
+                    alt="Captured skin lesion" 
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                  {showContour && (
+                    <canvas 
+                      ref={overlayCanvasRef} 
+                      width={224} 
+                      height={224} 
+                      className="absolute inset-0 w-full h-full object-cover pointer-events-none z-10"
+                    />
+                  )}
+                </>
               )}
 
               {/* Camera Error Message */}
@@ -720,6 +1076,16 @@ export default function DermoAIPage() {
                     {getConditionName(results.prediction, lang)}
                   </span>
                 </div>
+                {asymmetryIndex !== null && (
+                  <div className="text-right sm:text-center">
+                    <span className="text-xs text-slate-500 font-bold uppercase tracking-wider block">
+                      {lang === "ar" ? "مؤشر عدم التماثل (A)" : lang === "tr" ? "Asimetri İndeksi (A)" : "Asymmetry Index (A)"}
+                    </span>
+                    <span className="text-lg font-extrabold text-teal-300 block mt-1 font-mono">
+                      {asymmetryIndex}%
+                    </span>
+                  </div>
+                )}
                 <div className="text-right">
                   <span className="text-xs text-slate-500 font-bold uppercase tracking-wider block">
                     {lang === "ar" ? "مستوى الثقة" : lang === "tr" ? "Güven Seviyesi" : "Confidence Level"}
@@ -771,11 +1137,193 @@ export default function DermoAIPage() {
               </div>
             </div>
           )}
+
+          {/* Clinician Case Documentation Form */}
+          {results && currentHistoryId && (
+            <div className="bg-slate-900/60 border border-slate-900 rounded-3xl p-6 flex flex-col gap-5 shadow-xl backdrop-blur-md animate-fade-in">
+              <div className="border-b border-slate-800 pb-3">
+                <h3 className="text-base font-bold flex items-center gap-2 text-teal-400">
+                  📋 {lang === "ar" ? "توثيق الحالة السريرية" : lang === "tr" ? "Klinik Vaka Belgeleme" : "Clinical Case Documentation"}
+                </h3>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {lang === "ar" 
+                    ? "املأ تفاصيل الحالة لبناء قاعدة البيانات ومشاركتها" 
+                    : lang === "tr" 
+                      ? "Veritabanını oluşturmak ve vakaları paylaşmak için detayları doldurun" 
+                      : "Fill in case details to build the JDD and share cases"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Patient ID */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                    {lang === "ar" ? "رمز المريض (أرقام/حروف)" : lang === "tr" ? "Hasta Kodu (Anonim)" : "Patient Code (Anonymous)"}
+                  </label>
+                  <input 
+                    type="text" 
+                    value={patientId}
+                    onChange={(e) => setPatientId(e.target.value)}
+                    placeholder="e.g. PT-402"
+                    className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-sm outline-none transition"
+                  />
+                </div>
+
+                {/* Patient Age */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                    {lang === "ar" ? "العمر" : lang === "tr" ? "Yaş" : "Age"}
+                  </label>
+                  <input 
+                    type="number" 
+                    value={patientAge}
+                    onChange={(e) => setPatientAge(e.target.value)}
+                    placeholder="e.g. 45"
+                    className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-sm outline-none transition"
+                  />
+                </div>
+
+                {/* Patient Sex */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                    {lang === "ar" ? "الجنس" : lang === "tr" ? "Cinsiyet" : "Sex"}
+                  </label>
+                  <select 
+                    value={patientSex}
+                    onChange={(e) => setPatientSex(e.target.value as any)}
+                    className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-sm outline-none transition"
+                  >
+                    <option value="">--</option>
+                    <option value="male">{lang === "ar" ? "ذكر" : lang === "tr" ? "Erkek" : "Male"}</option>
+                    <option value="female">{lang === "ar" ? "أنثى" : lang === "tr" ? "Kadın" : "Female"}</option>
+                  </select>
+                </div>
+
+                {/* Lesion Location */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                    {lang === "ar" ? "موقع الآفة" : lang === "tr" ? "Lezyon Bölgesi" : "Lesion Location"}
+                  </label>
+                  <select 
+                    value={lesionLocation}
+                    onChange={(e) => setLesionLocation(e.target.value)}
+                    className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-sm outline-none transition"
+                  >
+                    <option value="">--</option>
+                    <option value="Face/Neck">{lang === "ar" ? "الوجه / الرقبة" : lang === "tr" ? "Yüz / Boyun" : "Face / Neck"}</option>
+                    <option value="Trunk">{lang === "ar" ? "الجذع (الظهر/البطن)" : lang === "tr" ? "Gövde" : "Trunk"}</option>
+                    <option value="Upper Extremity">{lang === "ar" ? "الأطراف العلوية" : lang === "tr" ? "Üst Ekstremite" : "Upper Extremity"}</option>
+                    <option value="Lower Extremity">{lang === "ar" ? "الأطراف السفلية" : lang === "tr" ? "Alt Ekstremite" : "Lower Extremity"}</option>
+                    <option value="Acral">{lang === "ar" ? "الأطراف (اليدين/القدمين)" : lang === "tr" ? "Akral (El/Ayak)" : "Acral"}</option>
+                    <option value="Other">{lang === "ar" ? "مواقع أخرى" : lang === "tr" ? "Diğer" : "Other"}</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Biopsy Status */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                  {lang === "ar" ? "حالة الخزعة / الفحص النسيجي" : lang === "tr" ? "Biyopsi / Patoloji Durumu" : "Biopsy / Pathology Status"}
+                </label>
+                <select 
+                  value={biopsyStatus}
+                  onChange={(e) => setBiopsyStatus(e.target.value)}
+                  className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-sm outline-none transition"
+                >
+                  <option value="not_biopsied">{lang === "ar" ? "لم تؤخذ خزعة" : lang === "tr" ? "Biyopsi Yapılmadı" : "Not Biopsied"}</option>
+                  <option value="pending">{lang === "ar" ? "بانتظار النتيجة" : lang === "tr" ? "Sonuç Bekleniyor" : "Pending Results"}</option>
+                  <option value="benign">{lang === "ar" ? "خزعة حميدة مؤكدة" : lang === "tr" ? "Doğrulanmış İyi Huylu" : "Confirmed Benign"}</option>
+                  <option value="malignant">{lang === "ar" ? "خزعة خبيثة مؤكدة" : lang === "tr" ? "Doğrulanmış Kötü Huylu" : "Confirmed Malignant"}</option>
+                </select>
+              </div>
+
+              {/* Clinical Notes */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                  {lang === "ar" ? "ملاحظات سريرية وأنماط الديرموسكوب" : lang === "tr" ? "Klinik Notlar ve Dermoskopi Bulguları" : "Clinical Notes & Dermoscopic Patterns"}
+                </label>
+                <textarea 
+                  value={clinicalNotes}
+                  onChange={(e) => setClinicalNotes(e.target.value)}
+                  rows={2}
+                  placeholder={lang === "ar" ? "الوصف السريري للآفة، شبكة الأوعية الصبغية..." : "Lesion appearance, pigment network structure..."}
+                  className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-sm outline-none resize-none transition"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                <button 
+                  onClick={saveCaseDetails}
+                  className="py-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 font-bold text-xs transition"
+                >
+                  💾 {lang === "ar" ? "حفظ محلياً" : lang === "tr" ? "Yerel Kaydet" : "Save Locally"}
+                </button>
+
+                <button 
+                  onClick={downloadJsonPackage}
+                  className="py-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 font-bold text-xs transition"
+                >
+                  📥 {lang === "ar" ? "تحميل ملف الحالة" : lang === "tr" ? "Dosya İndir" : "Export JSON"}
+                </button>
+
+                <button 
+                  onClick={submitCaseToDatabase}
+                  disabled={isSubmitting}
+                  className="py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:bg-slate-800 font-bold text-xs transition shadow-md shadow-teal-500/10"
+                >
+                  🚀 {isSubmitting 
+                    ? (lang === "ar" ? "جاري الإرسال..." : "Sending...") 
+                    : (lang === "ar" ? "مشاركة بقاعدة البيانات" : lang === "tr" ? "Veritabanına Gönder" : "Submit to Database")}
+                </button>
+              </div>
+
+              {submitMessage && (
+                <div className={`p-3 rounded-xl text-xs font-semibold leading-relaxed border ${
+                  submitMessage.type === "success" 
+                    ? "bg-emerald-500/5 border-emerald-500/20 text-emerald-300" 
+                    : "bg-red-500/5 border-red-500/20 text-red-300"
+                }`}>
+                  {submitMessage.text}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Right Side: Scan History & Guidelines (4 Columns) */}
         <section className="md:col-span-4 flex flex-col gap-6 w-full">
           
+          {/* Database Webhook Settings */}
+          <div className="bg-slate-900/60 border border-slate-900 rounded-3xl p-5 shadow-xl backdrop-blur-md flex flex-col gap-3">
+            <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
+              ⚙️ {lang === "ar" ? "إعدادات قاعدة البيانات المشتركة" : lang === "tr" ? "Ortak Veritabanı Ayarları" : "Database Webhook Settings"}
+            </h3>
+            <p className="text-[10px] text-slate-500 leading-normal">
+              {lang === "ar" 
+                ? "أدخل رابط Google Apps Script Webhook لإرسال الحالات ومشاركتها مع قاعدة البيانات المشتركة في Google Drive." 
+                : lang === "tr"
+                  ? "Tanı vakalarını Google Drive'daki ortak veritabanına göndermek için Google Apps Script Webhook URL'nizi girin."
+                  : "Enter your Google Apps Script Webhook URL to save submitted cases directly into your Google Drive."}
+            </p>
+            <div className="flex flex-col gap-1.5 mt-1">
+              <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                {lang === "ar" ? "رابط Webhook (Google Script URL)" : "Google Apps Script URL"}
+              </label>
+              <input 
+                type="text" 
+                value={webhookUrl}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setWebhookUrl(val);
+                  localStorage.setItem("dermoai_jdd_webhook", val);
+                }}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="bg-slate-950/60 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-xs outline-none transition font-mono"
+              />
+            </div>
+          </div>
+
           {/* History Panel */}
           <div className="bg-slate-900/60 border border-slate-900 rounded-3xl p-5 shadow-xl backdrop-blur-md">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3 mb-4">
@@ -801,7 +1349,12 @@ export default function DermoAIPage() {
                 {history.map((item) => (
                   <div 
                     key={item.id} 
-                    className="bg-slate-950/40 hover:bg-slate-950 border border-slate-900/40 rounded-xl p-3 flex gap-3 items-center justify-between transition duration-200"
+                    onClick={() => selectHistoryItem(item.id)}
+                    className={`cursor-pointer bg-slate-950/40 hover:bg-slate-950 border p-3 flex gap-3 items-center justify-between transition duration-200 ${
+                      currentHistoryId === item.id 
+                        ? "border-teal-500 bg-slate-950 shadow-md shadow-teal-500/5" 
+                        : "border-slate-900/40"
+                    }`}
                   >
                     <div className="flex gap-2.5 items-center">
                       <img 
@@ -810,8 +1363,11 @@ export default function DermoAIPage() {
                         className="w-10 h-10 rounded-lg object-cover border border-slate-800 bg-slate-900"
                       />
                       <div className="text-right">
-                        <span className="text-xs font-bold text-teal-400 block max-w-[130px] truncate">
+                        <span className="text-xs font-bold text-teal-400 block max-w-[130px] truncate flex items-center gap-1">
                           {getConditionName(item.prediction, lang)}
+                          {item.jddSubmitted && (
+                            <span className="text-[10px] text-emerald-400 font-normal" title="Submitted to JDD">✓</span>
+                          )}
                         </span>
                         <span className="text-[10px] text-slate-500 font-semibold block mt-0.5">
                           {item.date}
