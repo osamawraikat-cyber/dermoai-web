@@ -664,6 +664,7 @@ export default function DermoAIPage() {
 
     try {
       const payload = {
+        authToken: "wraikat_dermoai_secure_2026",
         caseId: item.id,
         date: item.date,
         prediction: item.prediction,

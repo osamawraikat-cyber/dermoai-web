@@ -38,6 +38,14 @@ function doPost(e) {
     // 1. Parse JSON payload
     var payload = JSON.parse(e.postData.contents);
     
+    // SECURITY GATE: Verify secret authentication token to prevent spam/abuse
+    var SECRET_TOKEN = "wraikat_dermoai_secure_2026";
+    if (payload.authToken !== SECRET_TOKEN) {
+      return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "Unauthorized request" }))
+                           .setMimeType(ContentService.MimeType.JSON)
+                           .setHeader("Access-Control-Allow-Origin", "*");
+    }
+    
     // 2. Identify or create target folder in Google Drive
     var folderName = "DermoAI_Collaborative_Database";
     var folders = DriveApp.getFoldersByName(folderName);
