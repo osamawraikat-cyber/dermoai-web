@@ -101,7 +101,7 @@ export default function DermoAIPage() {
   const [showContour, setShowContour] = useState(true);
 
   // Database settings & status
-  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("https://script.google.com/macros/s/AKfycbzz7flXhvHQxUwoWWkexNals42mvNdVMkFutKHyb6qGeXR2vqU8mSuLK5jdWrgo_BsEpQ/exec");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -158,6 +158,8 @@ export default function DermoAIPage() {
       const storedWebhook = localStorage.getItem("dermoai_jdd_webhook");
       if (storedWebhook) {
         setWebhookUrl(storedWebhook);
+      } else {
+        setWebhookUrl("https://script.google.com/macros/s/AKfycbzz7flXhvHQxUwoWWkexNals42mvNdVMkFutKHyb6qGeXR2vqU8mSuLK5jdWrgo_BsEpQ/exec");
       }
     }
   }, []);
