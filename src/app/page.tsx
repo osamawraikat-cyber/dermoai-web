@@ -234,22 +234,24 @@ export default function DermoAIPage() {
         setLitertLoaded(true);
         console.log("LiteRT WebAssembly runtime loaded.");
         
-        // Load model in parallel binary chunks (<25MB each for Cloudflare compatibility)
+        // Load model in parallel binary chunks (<10MB each for Cloudflare compatibility)
         let modelSource: any = null;
         try {
-          const [res1, res2] = await Promise.all([
+          const [res1, res2, res3] = await Promise.all([
             fetch("/models/model_chunk_1.jpg"),
-            fetch("/models/model_chunk_2.jpg")
+            fetch("/models/model_chunk_2.jpg"),
+            fetch("/models/model_chunk_3.jpg")
           ]);
-          if (res1.ok && res2.ok) {
-            const [buf1, buf2] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer()]);
-            console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} bytes). Assembling in memory...`);
-            const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
+          if (res1.ok && res2.ok && res3.ok) {
+            const [buf1, buf2, buf3] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer(), res3.arrayBuffer()]);
+            console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} + ${buf3.byteLength} bytes). Assembling in memory...`);
+            const combined = new Uint8Array(buf1.byteLength + buf2.byteLength + buf3.byteLength);
             combined.set(new Uint8Array(buf1), 0);
             combined.set(new Uint8Array(buf2), buf1.byteLength);
+            combined.set(new Uint8Array(buf3), buf1.byteLength + buf2.byteLength);
             modelSource = combined;
           } else {
-            console.warn("Chunk fetch HTTP error:", res1.status, res2.status);
+            console.warn("Chunk fetch HTTP status:", res1.status, res2.status, res3.status);
           }
         } catch (chunkErr) {
           console.warn("Chunk fetch failed:", chunkErr);
