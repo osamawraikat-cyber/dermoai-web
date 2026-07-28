@@ -78,6 +78,7 @@ export default function DermoAIPage() {
   const [lang, setLang] = useState<"ar" | "en" | "tr">("ar");
   const [litertLoaded, setLitertLoaded] = useState(false);
   const [litertLoading, setLitertLoading] = useState(true);
+  const [litertError, setLitertError] = useState<string | null>(null);
   const [modelCompiling, setModelCompiling] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -234,7 +235,7 @@ export default function DermoAIPage() {
         console.log("LiteRT WebAssembly runtime loaded.");
         
         // Load model in parallel binary chunks (<25MB each for Cloudflare compatibility)
-        let modelSource: any = "/models/dermoai_model_float16.tflite";
+        let modelSource: any = null;
         try {
           const [res1, res2] = await Promise.all([
             fetch("/models/model_chunk_1.bin"),
@@ -246,11 +247,16 @@ export default function DermoAIPage() {
             const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
             combined.set(new Uint8Array(buf1), 0);
             combined.set(new Uint8Array(buf2), buf1.byteLength);
-            
-            modelSource = URL.createObjectURL(new Blob([combined], { type: "application/octet-stream" }));
+            modelSource = combined;
+          } else {
+            console.warn("Chunk fetch HTTP error:", res1.status, res2.status);
           }
         } catch (chunkErr) {
-          console.warn("Chunk fetch failed, falling back to static URL:", chunkErr);
+          console.warn("Chunk fetch failed:", chunkErr);
+        }
+
+        if (!modelSource) {
+          throw new Error("Could not load AI model chunks from server.");
         }
 
         let compiledModel: any = null;
@@ -266,6 +272,7 @@ export default function DermoAIPage() {
         console.log("TFLite Model compiled successfully.");
       } catch (err: any) {
         console.error("Failed to initialize LiteRT.js:", err);
+        setLitertError(err?.message || "Failed to load AI model.");
       } finally {
         setLitertLoading(false);
         setModelCompiling(false);
