@@ -226,6 +226,7 @@ export default function DermoAIPage() {
         
         const ort = await import("onnxruntime-web");
         ort.env.wasm.numThreads = 1;
+        ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
         
         console.log("Fetching ONNX model chunks (<15MB each for Cloudflare Pages compatibility)...");
         const [res1, res2] = await Promise.all([
