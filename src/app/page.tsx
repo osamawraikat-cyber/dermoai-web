@@ -235,7 +235,7 @@ export default function DermoAIPage() {
         console.log("LiteRT WebAssembly runtime loaded.");
         
         // Load model in parallel binary chunks (<10MB each for Cloudflare compatibility)
-        let modelSource: any = null;
+        let combined: Uint8Array | null = null;
         try {
           const [res1, res2, res3] = await Promise.all([
             fetch("/models/model_chunk_1.jpg"),
@@ -245,11 +245,10 @@ export default function DermoAIPage() {
           if (res1.ok && res2.ok && res3.ok) {
             const [buf1, buf2, buf3] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer(), res3.arrayBuffer()]);
             console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} + ${buf3.byteLength} bytes). Assembling in memory...`);
-            const combined = new Uint8Array(buf1.byteLength + buf2.byteLength + buf3.byteLength);
+            combined = new Uint8Array(buf1.byteLength + buf2.byteLength + buf3.byteLength);
             combined.set(new Uint8Array(buf1), 0);
             combined.set(new Uint8Array(buf2), buf1.byteLength);
             combined.set(new Uint8Array(buf3), buf1.byteLength + buf2.byteLength);
-            modelSource = combined;
           } else {
             console.warn("Chunk fetch HTTP status:", res1.status, res2.status, res3.status);
           }
@@ -257,17 +256,25 @@ export default function DermoAIPage() {
           console.warn("Chunk fetch failed:", chunkErr);
         }
 
-        if (!modelSource) {
+        if (!combined) {
           throw new Error("Could not load AI model chunks from server.");
         }
 
         let compiledModel: any = null;
         try {
           console.log("Attempting TFLite compilation with WebGPU acceleration...");
-          compiledModel = await litert.loadAndCompile(modelSource, { accelerator: "webgpu" });
+          try {
+            compiledModel = await litert.loadAndCompile(combined, { accelerator: "webgpu" });
+          } catch (e1) {
+            compiledModel = await litert.loadAndCompile(combined.buffer, { accelerator: "webgpu" });
+          }
         } catch (gpuErr) {
           console.warn("WebGPU acceleration unavailable on this device. Falling back to LiteRT WASM runtime:", gpuErr);
-          compiledModel = await litert.loadAndCompile(modelSource);
+          try {
+            compiledModel = await litert.loadAndCompile(combined);
+          } catch (e2) {
+            compiledModel = await litert.loadAndCompile(combined.buffer);
+          }
         }
 
         modelRef.current = compiledModel;
