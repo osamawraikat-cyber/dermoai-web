@@ -237,32 +237,35 @@ export default function DermoAIPage() {
         setModelCompiling(true);
         console.log("Compiling TFLite model...");
         
-        // Load model in parallel binary chunks to bypass static host file size limits (<25MB)
-        console.log("Fetching model chunks...");
-        const [res1, res2] = await Promise.all([
-          fetch("/models/model_chunk_1.bin"),
-          fetch("/models/model_chunk_2.bin")
-        ]);
+        let modelSource: any = "/models/dermoai_model_float16.tflite";
+        
+        try {
+          const [res1, res2] = await Promise.all([
+            fetch("/models/model_chunk_1.bin"),
+            fetch("/models/model_chunk_2.bin")
+          ]);
 
-        if (!res1.ok || !res2.ok) {
-          throw new Error(`Failed to fetch model chunks: ${res1.status} / ${res2.status}`);
+          if (res1.ok && res2.ok) {
+            const [buf1, buf2] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer()]);
+            console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} bytes). Assembling in memory...`);
+            const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
+            combined.set(new Uint8Array(buf1), 0);
+            combined.set(new Uint8Array(buf2), buf1.byteLength);
+            modelSource = combined.buffer;
+          }
+        } catch (chunkErr) {
+          console.warn("Chunk fetch failed, falling back to static URL:", chunkErr);
         }
 
-        const [buf1, buf2] = await Promise.all([
-          res1.arrayBuffer(),
-          res2.arrayBuffer()
-        ]);
+        let compiledModel: any = null;
+        try {
+          console.log("Attempting TFLite compilation with WebGPU acceleration...");
+          compiledModel = await litert.loadAndCompile(modelSource, { accelerator: "webgpu" });
+        } catch (gpuErr) {
+          console.warn("WebGPU acceleration unavailable on this device. Falling back to LiteRT WASM runtime:", gpuErr);
+          compiledModel = await litert.loadAndCompile(modelSource);
+        }
 
-        console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} bytes). Assembling in memory...`);
-        const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
-        combined.set(new Uint8Array(buf1), 0);
-        combined.set(new Uint8Array(buf2), buf1.byteLength);
-
-        console.log("Compiling TFLite model in LiteRT WebAssembly...");
-        const compiledModel = await litert.loadAndCompile(combined.buffer, {
-          accelerator: "webgpu"
-        });
-        
         modelRef.current = compiledModel;
         console.log("TFLite Model compiled successfully.");
       } catch (err: any) {
