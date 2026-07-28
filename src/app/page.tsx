@@ -238,8 +238,8 @@ export default function DermoAIPage() {
         let modelSource: any = null;
         try {
           const [res1, res2] = await Promise.all([
-            fetch("/models/model_chunk_1.bin"),
-            fetch("/models/model_chunk_2.bin")
+            fetch("/models/model_chunk_1.jpg"),
+            fetch("/models/model_chunk_2.jpg")
           ]);
           if (res1.ok && res2.ok) {
             const [buf1, buf2] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer()]);
