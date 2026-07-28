@@ -101,6 +101,7 @@ export default function DermoAIPage() {
   const [biopsyStatus, setBiopsyStatus] = useState("not_biopsied");
   const [asymmetryIndex, setAsymmetryIndex] = useState<number | null>(null);
   const [showContour, setShowContour] = useState(true);
+  const [scanSource, setScanSource] = useState<"camera" | "upload">("upload");
 
   // Database settings & status
   const [webhookUrl, setWebhookUrl] = useState("https://script.google.com/macros/s/AKfycbzz7flXhvHQxUwoWWkexNals42mvNdVMkFutKHyb6qGeXR2vqU8mSuLK5jdWrgo_BsEpQ/exec");
@@ -278,6 +279,7 @@ export default function DermoAIPage() {
 
   // Start Camera Stream
   const startCamera = async (deviceId?: string) => {
+    setScanSource("camera");
     setCameraError(null);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -301,10 +303,10 @@ export default function DermoAIPage() {
     } catch (err: any) {
       console.error("Camera access error:", err);
       setCameraError(lang === "ar" 
-        ? "تعذر تشغيل الكاميرا. يرجى التحقق من أذونات الموقع/الكاميرا."
+        ? "الكاميرا غير متوفرة. يمكنك اختيار صورة من جهازك مباشرة."
         : lang === "tr"
-          ? "Kameraya erişilemedi. Lütfen site izinlerini kontrol edin."
-          : "Failed to access camera. Please check permissions."
+          ? "Kamera mevcut değil. Doğrudan dosya yükleyebilirsiniz."
+          : "Camera unavailable. You can upload an image file directly."
       );
       setCameraActive(false);
     }
@@ -568,6 +570,8 @@ export default function DermoAIPage() {
   // Handle image upload fallback
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
+      setScanSource("upload");
+      setCameraError(null);
       const file = e.target.files[0];
       const reader = new FileReader();
       reader.onload = (event) => {
@@ -586,7 +590,12 @@ export default function DermoAIPage() {
   const resetScan = () => {
     setCapturedImage(null);
     setResults(null);
-    startCamera();
+    setCameraError(null);
+    if (scanSource === "camera") {
+      startCamera();
+    } else {
+      stopCamera();
+    }
   };
 
   // Clear Scan History
@@ -977,13 +986,22 @@ export default function DermoAIPage() {
                 </>
               )}
 
-              {/* Camera Error Message */}
+              {/* Camera Error Message with Direct Upload Fallback */}
               {cameraError && !capturedImage && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-slate-950">
-                  <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-3">
-                    ⚠️
+                  <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-3 text-lg">
+                    📷
                   </div>
-                  <p className="text-sm font-semibold max-w-xs">{cameraError}</p>
+                  <p className="text-sm font-semibold max-w-xs text-slate-300 mb-4">{cameraError}</p>
+                  <label className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold cursor-pointer transition duration-200 shadow-lg shadow-teal-600/20">
+                    <span>{lang === "ar" ? "تحميل صورة من الملفات" : lang === "tr" ? "Dosyadan Fotoğraf Yükle" : "Upload Lesion Photo"}</span>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={handleImageUpload} 
+                      className="hidden" 
+                    />
+                  </label>
                 </div>
               )}
 
