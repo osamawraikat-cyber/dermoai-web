@@ -238,23 +238,28 @@ export default function DermoAIPage() {
         console.log("Compiling TFLite model...");
         
         // Load model in parallel binary chunks to bypass static host file size limits (<25MB)
+        console.log("Fetching model chunks...");
         const [res1, res2] = await Promise.all([
           fetch("/models/model_chunk_1.bin"),
           fetch("/models/model_chunk_2.bin")
         ]);
+
+        if (!res1.ok || !res2.ok) {
+          throw new Error(`Failed to fetch model chunks: ${res1.status} / ${res2.status}`);
+        }
 
         const [buf1, buf2] = await Promise.all([
           res1.arrayBuffer(),
           res2.arrayBuffer()
         ]);
 
+        console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} bytes). Assembling in memory...`);
         const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
         combined.set(new Uint8Array(buf1), 0);
         combined.set(new Uint8Array(buf2), buf1.byteLength);
 
-        const modelBlobUrl = URL.createObjectURL(new Blob([combined], { type: "application/octet-stream" }));
-
-        const compiledModel = await litert.loadAndCompile(modelBlobUrl, {
+        console.log("Compiling TFLite model in LiteRT WebAssembly...");
+        const compiledModel = await litert.loadAndCompile(combined.buffer, {
           accelerator: "webgpu"
         });
         
