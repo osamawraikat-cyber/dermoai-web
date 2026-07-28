@@ -234,8 +234,12 @@ export default function DermoAIPage() {
           if (typeof litert.loadLiteRt === "function") {
             await litert.loadLiteRt("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm");
           }
-        } catch (wasmErr) {
-          console.warn("loadLiteRt warning:", wasmErr);
+        } catch (wasmErr: any) {
+          if (wasmErr?.message?.includes("already loading") || wasmErr?.message?.includes("already loaded")) {
+            console.log("LiteRT runtime already initialized or loading, continuing...");
+          } else {
+            console.warn("loadLiteRt notice:", wasmErr);
+          }
         }
         setLitertLoaded(true);
         console.log("LiteRT WebAssembly runtime loaded.");
