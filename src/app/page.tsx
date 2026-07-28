@@ -807,26 +807,35 @@ export default function DermoAIPage() {
           </div>
         </div>
 
-        {/* Trilingual Language Selector */}
-        <div className="flex gap-1 bg-slate-900 border border-slate-800 p-0.5 rounded-lg select-none">
-          <button 
-            onClick={() => setLang("ar")} 
-            className={`px-2 py-1 text-[10px] rounded-md font-semibold transition ${lang === "ar" ? "bg-teal-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
+        {/* Navigation & Trilingual Language Selector */}
+        <div className="flex items-center gap-3">
+          <a
+            href="/about"
+            className="px-3 py-1 text-xs font-semibold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-lg transition-all"
           >
-            عربي
-          </button>
-          <button 
-            onClick={() => setLang("en")} 
-            className={`px-2 py-1 text-[10px] rounded-md font-semibold transition ${lang === "en" ? "bg-teal-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
-          >
-            EN
-          </button>
-          <button 
-            onClick={() => setLang("tr")} 
-            className={`px-2 py-1 text-[10px] rounded-md font-semibold transition ${lang === "tr" ? "bg-teal-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
-          >
-            TR
-          </button>
+            {lang === "ar" ? "المواصفات والبيانات 📊" : lang === "tr" ? "Teknik Özellikler 📊" : "Specs & About 📊"}
+          </a>
+
+          <div className="flex gap-1 bg-slate-900 border border-slate-800 p-0.5 rounded-lg select-none">
+            <button 
+              onClick={() => setLang("ar")} 
+              className={`px-2 py-1 text-[10px] rounded-md font-semibold transition ${lang === "ar" ? "bg-teal-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              عربي
+            </button>
+            <button 
+              onClick={() => setLang("en")} 
+              className={`px-2 py-1 text-[10px] rounded-md font-semibold transition ${lang === "en" ? "bg-teal-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              EN
+            </button>
+            <button 
+              onClick={() => setLang("tr")} 
+              className={`px-2 py-1 text-[10px] rounded-md font-semibold transition ${lang === "tr" ? "bg-teal-500 text-white" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              TR
+            </button>
+          </div>
         </div>
       </header>
 
