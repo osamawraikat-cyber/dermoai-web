@@ -455,22 +455,44 @@ export default function DermoAIPage() {
         floatData[i * 3 + 2] = (b - mean[2]) / std[2];
       }
 
-      // 3. Create LiteRT input tensor
+      // 3. Create LiteRT input tensor (Pass 1: Original Image)
       const { Tensor } = litertLibRef.current;
-      const inputTensor = new Tensor(floatData, [1, 224, 224, 3]);
+      const inputTensor1 = new Tensor(floatData, [1, 224, 224, 3]);
 
-      // 4. Run local inference
-      console.log("Running on-device inference...");
-      const outputTensors = await modelRef.current.run(inputTensor);
+      // Create Pass 2: Horizontally Flipped TTA Tensor
+      const floatDataTTA = new Float32Array(1 * 224 * 224 * 3);
+      for (let y = 0; y < 224; y++) {
+        for (let x = 0; x < 224; x++) {
+          const origIdx = (y * 224 + x) * 3;
+          const flipIdx = (y * 224 + (223 - x)) * 3;
+          floatDataTTA[flipIdx] = floatData[origIdx];
+          floatDataTTA[flipIdx + 1] = floatData[origIdx + 1];
+          floatDataTTA[flipIdx + 2] = floatData[origIdx + 2];
+        }
+      }
+      const inputTensor2 = new Tensor(floatDataTTA, [1, 224, 224, 3]);
 
-      // 5. Read output and convert to probabilities (softmax)
-      // Transfer output tensor to WASM runtime memory
-      const outputData = (await outputTensors[0].moveTo("wasm")).toTypedArray();
+      // 4. Run local inference with Test-Time Augmentation (TTA)
+      console.log("Running on-device inference with 2-Pass TTA...");
+      const outputTensors1 = await modelRef.current.run(inputTensor1);
+      const outputTensors2 = await modelRef.current.run(inputTensor2);
+
+      // 5. Read outputs and average probabilities across TTA passes
+      const outputData1 = (await outputTensors1[0].moveTo("wasm")).toTypedArray();
+      const outputData2 = (await outputTensors2[0].moveTo("wasm")).toTypedArray();
       
-      // Calculate softmax over the 5 outputs
-      const expValues = Array.from(outputData).map(val => Math.exp(val as number));
-      const sumExp = expValues.reduce((a, b) => a + b, 0);
-      const probabilities = expValues.map(val => (val as number) / sumExp);
+      // Pass 1 Softmax
+      const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
+      const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
+      const probs1 = expValues1.map(val => (val as number) / sumExp1);
+
+      // Pass 2 Softmax
+      const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
+      const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
+      const probs2 = expValues2.map(val => (val as number) / sumExp2);
+
+      // Average predictions
+      const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
 
       // Sort outputs
       const resultsArray = CONDITIONS.map((cond, idx) => ({
