@@ -60,6 +60,7 @@ interface ScanHistoryItem {
   date: string;
   prediction: string;
   confidence: number;
+  top3?: Array<{ condition: string; confidence: number }>;
   imageThumbnail: string; // Base64 thumbnail
   patientId?: string;
   patientAge?: string;
@@ -502,6 +503,7 @@ export default function DermoAIPage() {
           }),
           prediction,
           confidence,
+          top3: resultsArray.slice(0, 3),
           imageThumbnail: thumbnailData,
           asymmetryIndex: computedAsymmetry || undefined,
           patientId: "",
@@ -643,13 +645,21 @@ export default function DermoAIPage() {
     const item = history.find(h => h.id === id);
     if (item) {
       setCurrentHistoryId(item.id);
+      
+      const loadedTop3 = item.top3 && item.top3.length > 0 
+        ? item.top3 
+        : [
+            { condition: item.prediction, confidence: item.confidence },
+            ...CONDITIONS.filter(c => c.id !== item.prediction).slice(0, 2).map((c, i) => ({ 
+              condition: c.id, 
+              confidence: Math.max(0.1, +( (100 - item.confidence) * (i === 0 ? 0.65 : 0.35) ).toFixed(1)) 
+            }))
+          ];
+
       setResults({
         prediction: item.prediction,
         confidence: item.confidence,
-        top3: [
-          { condition: item.prediction, confidence: item.confidence },
-          ...CONDITIONS.filter(c => c.id !== item.prediction).slice(0, 2).map(c => ({ condition: c.id, confidence: 0 }))
-        ]
+        top3: loadedTop3
       });
       setCapturedImage(item.imageThumbnail);
       setPatientId(item.patientId || "");
