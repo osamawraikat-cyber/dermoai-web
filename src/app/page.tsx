@@ -222,11 +222,20 @@ export default function DermoAIPage() {
     async function initOrt() {
       try {
         setLitertLoading(true);
-        console.log("Loading ONNX Runtime Web engine...");
-        
-        const ort = await import("onnxruntime-web");
+        console.log("Loading ONNX Runtime Web engine from CDN...");
+        if (!(window as any).ort) {
+          const script = document.createElement("script");
+          script.src = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.js";
+          document.head.appendChild(script);
+          await new Promise((resolve, reject) => {
+            script.onload = resolve;
+            script.onerror = () => reject(new Error("Failed to load ONNX script from CDN"));
+          });
+        }
+
+        const ort = (window as any).ort;
+        if (!ort) throw new Error("ONNX Runtime Web library not found on window object.");
         ort.env.wasm.numThreads = 1;
-        ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
         
         console.log("Fetching ONNX model chunks (<15MB each for Cloudflare Pages compatibility)...");
         const [res1, res2] = await Promise.all([
