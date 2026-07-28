@@ -233,19 +233,33 @@ export default function DermoAIPage() {
         setLitertLoaded(true);
         console.log("LiteRT WebAssembly runtime loaded.");
         
-        // Load and Compile TFLite Model
-        setModelCompiling(true);
-        console.log("Compiling TFLite model...");
-        
-        const modelUrl = "/models/dermoai_model_float16.tflite";
+        // Load model in parallel binary chunks (<25MB each for Cloudflare compatibility)
+        let modelSource: any = "/models/dermoai_model_float16.tflite";
+        try {
+          const [res1, res2] = await Promise.all([
+            fetch("/models/model_chunk_1.bin"),
+            fetch("/models/model_chunk_2.bin")
+          ]);
+          if (res1.ok && res2.ok) {
+            const [buf1, buf2] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer()]);
+            console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} bytes). Assembling in memory...`);
+            const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
+            combined.set(new Uint8Array(buf1), 0);
+            combined.set(new Uint8Array(buf2), buf1.byteLength);
+            
+            modelSource = URL.createObjectURL(new Blob([combined], { type: "application/octet-stream" }));
+          }
+        } catch (chunkErr) {
+          console.warn("Chunk fetch failed, falling back to static URL:", chunkErr);
+        }
 
         let compiledModel: any = null;
         try {
           console.log("Attempting TFLite compilation with WebGPU acceleration...");
-          compiledModel = await litert.loadAndCompile(modelUrl, { accelerator: "webgpu" });
+          compiledModel = await litert.loadAndCompile(modelSource, { accelerator: "webgpu" });
         } catch (gpuErr) {
           console.warn("WebGPU acceleration unavailable on this device. Falling back to LiteRT WASM runtime:", gpuErr);
-          compiledModel = await litert.loadAndCompile(modelUrl);
+          compiledModel = await litert.loadAndCompile(modelSource);
         }
 
         modelRef.current = compiledModel;
