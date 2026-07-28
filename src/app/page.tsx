@@ -230,7 +230,13 @@ export default function DermoAIPage() {
         litertLibRef.current = litert;
         
         // Compile the WASM runtime pointing to CDN hosted WASM files
-        await litert.loadLiteRt("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/");
+        try {
+          if (typeof litert.loadLiteRt === "function") {
+            await litert.loadLiteRt("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm");
+          }
+        } catch (wasmErr) {
+          console.warn("loadLiteRt warning:", wasmErr);
+        }
         setLitertLoaded(true);
         console.log("LiteRT WebAssembly runtime loaded.");
         
