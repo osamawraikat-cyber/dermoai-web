@@ -810,7 +810,7 @@ export default function DermoAIPage() {
         {/* Navigation & Trilingual Language Selector */}
         <div className="flex items-center gap-3">
           <a
-            href="/about"
+            href="/about/"
             className="px-3 py-1 text-xs font-semibold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-lg transition-all"
           >
             {lang === "ar" ? "المواصفات والبيانات 📊" : lang === "tr" ? "Teknik Özellikler 📊" : "Specs & About 📊"}
