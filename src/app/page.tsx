@@ -237,10 +237,25 @@ export default function DermoAIPage() {
         setModelCompiling(true);
         console.log("Compiling TFLite model...");
         
-        // Load model statically from the Next.js public directory
-        // Use the float16 version for fast loading and reduced download latency
-        const compiledModel = await litert.loadAndCompile("/models/dermoai_model_float16.tflite", {
-          accelerator: "webgpu" // Fallback to webgl or cpu is handled automatically by LiteRT
+        // Load model in parallel binary chunks to bypass static host file size limits (<25MB)
+        const [res1, res2] = await Promise.all([
+          fetch("/models/model_chunk_1.bin"),
+          fetch("/models/model_chunk_2.bin")
+        ]);
+
+        const [buf1, buf2] = await Promise.all([
+          res1.arrayBuffer(),
+          res2.arrayBuffer()
+        ]);
+
+        const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
+        combined.set(new Uint8Array(buf1), 0);
+        combined.set(new Uint8Array(buf2), buf1.byteLength);
+
+        const modelBlobUrl = URL.createObjectURL(new Blob([combined], { type: "application/octet-stream" }));
+
+        const compiledModel = await litert.loadAndCompile(modelBlobUrl, {
+          accelerator: "webgpu"
         });
         
         modelRef.current = compiledModel;
