@@ -226,23 +226,11 @@ export default function DermoAIPage() {
         
         // Bypass Next.js/Turbopack import interceptor by using a runtime function constructor
         const importModule = new Function("url", "return import(url)");
-        const litertModule = await importModule("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/+esm");
-        const litert = litertModule.loadAndCompile ? litertModule : (litertModule.default || litertModule);
+        const litert = await importModule("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/+esm");
         litertLibRef.current = litert;
         
         // Compile the WASM runtime pointing to CDN hosted WASM files
-        const loadLiteRtFn = litert.loadLiteRt || litert.default?.loadLiteRt;
-        try {
-          if (typeof loadLiteRtFn === "function") {
-            await loadLiteRtFn("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm");
-          }
-        } catch (wasmErr: any) {
-          if (wasmErr?.message?.includes("already loading") || wasmErr?.message?.includes("already loaded")) {
-            console.log("LiteRT runtime already initialized or loading, continuing...");
-          } else {
-            console.warn("loadLiteRt notice:", wasmErr);
-          }
-        }
+        await litert.loadLiteRt("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/");
         setLitertLoaded(true);
         console.log("LiteRT WebAssembly runtime loaded.");
         
@@ -272,38 +260,21 @@ export default function DermoAIPage() {
           throw new Error("Could not load AI model chunks from server.");
         }
 
-        const loadAndCompileFn = litert.loadAndCompile || litert.default?.loadAndCompile;
-        if (typeof loadAndCompileFn !== "function") {
-          throw new Error(`loadAndCompile function missing on module keys: ${Object.keys(litertModule).join(", ")}`);
-        }
-
         let compiledModel: any = null;
-        const attempts = [
-          { source: combined, opts: { accelerator: "webgpu" } },
-          { source: combined.buffer, opts: { accelerator: "webgpu" } },
-          { source: combined, opts: {} },
-          { source: combined.buffer, opts: {} }
-        ];
-
-        let lastErr: any = null;
-        for (const attempt of attempts) {
+        try {
+          console.log("Attempting TFLite compilation with WebGPU acceleration...");
+          compiledModel = await litert.loadAndCompile(combined, { accelerator: "webgpu" });
+        } catch (gpuErr) {
+          console.warn("WebGPU acceleration unavailable on this device. Falling back to LiteRT WASM runtime:", gpuErr);
           try {
-            console.log("Attempting LiteRT compilation...", attempt.opts);
-            compiledModel = await loadAndCompileFn(attempt.source, attempt.opts);
-            if (compiledModel) break;
-          } catch (e) {
-            console.warn("LiteRT compile attempt failed:", e);
-            lastErr = e;
+            compiledModel = await litert.loadAndCompile(combined);
+          } catch (e2) {
+            compiledModel = await litert.loadAndCompile(combined.buffer);
           }
-        }
-
-        if (!compiledModel) {
-          throw new Error(`Model compilation failed: ${lastErr?.message || lastErr}`);
         }
 
         modelRef.current = compiledModel;
         console.log("TFLite Model compiled successfully.");
-        setLitertError(null);
       } catch (err: any) {
         console.error("Failed to initialize LiteRT.js:", err);
         setLitertError(err?.message || "Failed to load AI model.");
@@ -378,7 +349,11 @@ export default function DermoAIPage() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
-// Switch Camera Device
+    }
+    setCameraActive(false);
+  };
+
+  // Switch Camera Device
   const handleDeviceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const deviceId = e.target.value;
     setSelectedDevice(deviceId);
@@ -387,24 +362,20 @@ export default function DermoAIPage() {
     }
   };
 
-  // Preprocess image and run LiteRT inference with 100% fail-safe execution
+  // Preprocess image and run LiteRT inference
   const processImage = async (imageSrc: string) => {
-    setIsProcessing(true);
-
-    // If model is still compiling/loading, wait up to 10 seconds for completion
     if (!modelRef.current || !litertLibRef.current) {
-      console.log("Model compiling in background, waiting for completion...");
-      let attempts = 0;
-      while ((!modelRef.current || !litertLibRef.current) && attempts < 20) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        attempts++;
-      }
+      alert(
+        lang === "ar" 
+          ? "جاري تحميل النموذج، يرجى المحاولة بعد قليل." 
+          : lang === "tr" 
+            ? "Model yükleniyor, lütfen biraz bekleyin." 
+            : "Model is still loading. Please wait."
+      );
+      return;
     }
 
-    // If model compiled successfully, proceed with 2-Pass TTA LiteRT inference
-    const useNN = !!(modelRef.current && litertLibRef.current);
-    console.log(`Processing image with ${useNN ? 'ConvNeXt LiteRT 2-Pass TTA' : 'Fail-Safe Clinical Feature Classifier'}...`);
-
+    setIsProcessing(true);
     try {
       const img = new Image();
       img.src = imageSrc;
@@ -510,118 +481,88 @@ export default function DermoAIPage() {
         floatData[i * 3 + 2] = (b - mean[2]) / std[2];
       }
 
+      // 3. Create LiteRT input tensor (Pass 1: Original Image)
+      const { Tensor } = litertLibRef.current;
+      const inputTensor1 = new Tensor(floatData, [1, 224, 224, 3]);
+
+      // Create Pass 2: Horizontally Flipped TTA Tensor
+      const floatDataTTA = new Float32Array(1 * 224 * 224 * 3);
+      for (let y = 0; y < 224; y++) {
+        for (let x = 0; x < 224; x++) {
+          const origIdx = (y * 224 + x) * 3;
+          const flipIdx = (y * 224 + (223 - x)) * 3;
+          floatDataTTA[flipIdx] = floatData[origIdx];
+          floatDataTTA[flipIdx + 1] = floatData[origIdx + 1];
+          floatDataTTA[flipIdx + 2] = floatData[origIdx + 2];
+        }
+      }
+      const inputTensor2 = new Tensor(floatDataTTA, [1, 224, 224, 3]);
+
+      // 4. Run local inference with Test-Time Augmentation (TTA)
+      console.log("Running on-device inference with 2-Pass TTA...");
+      let outputTensors1: any = null;
+      let outputTensors2: any = null;
+      let wasmTensor1: any = null;
+      let wasmTensor2: any = null;
+
       let resultsArray: Array<{ condition: string; confidence: number }> = [];
       let prediction = "";
       let confidence = 0;
 
-      if (useNN && modelRef.current && litertLibRef.current) {
-        // 3. Create LiteRT input tensor (Pass 1: Original Image)
-        const { Tensor } = litertLibRef.current;
-        const inputTensor1 = new Tensor(floatData, [1, 224, 224, 3]);
+      try {
+        outputTensors1 = await modelRef.current.run(inputTensor1);
+        outputTensors2 = await modelRef.current.run(inputTensor2);
 
-        // Create Pass 2: Horizontally Flipped TTA Tensor
-        const floatDataTTA = new Float32Array(1 * 224 * 224 * 3);
-        for (let y = 0; y < 224; y++) {
-          for (let x = 0; x < 224; x++) {
-            const origIdx = (y * 224 + x) * 3;
-            const flipIdx = (y * 224 + (223 - x)) * 3;
-            floatDataTTA[flipIdx] = floatData[origIdx];
-            floatDataTTA[flipIdx + 1] = floatData[origIdx + 1];
-            floatDataTTA[flipIdx + 2] = floatData[origIdx + 2];
-          }
-        }
-        const inputTensor2 = new Tensor(floatDataTTA, [1, 224, 224, 3]);
+        // 5. Read outputs and average probabilities across TTA passes
+        wasmTensor1 = await outputTensors1[0].moveTo("wasm");
+        wasmTensor2 = await outputTensors2[0].moveTo("wasm");
+        const outputData1 = wasmTensor1.toTypedArray();
+        const outputData2 = wasmTensor2.toTypedArray();
+        
+        // Pass 1 Softmax
+        const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
+        const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
+        const probs1 = expValues1.map(val => (val as number) / sumExp1);
 
-        // 4. Run local inference with Test-Time Augmentation (TTA)
-        console.log("Running on-device inference with 2-Pass TTA...");
-        let outputTensors1: any = null;
-        let outputTensors2: any = null;
-        let wasmTensor1: any = null;
-        let wasmTensor2: any = null;
+        // Pass 2 Softmax
+        const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
+        const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
+        const probs2 = expValues2.map(val => (val as number) / sumExp2);
 
-        try {
-          outputTensors1 = await modelRef.current.run(inputTensor1);
-          outputTensors2 = await modelRef.current.run(inputTensor2);
+        // Average predictions
+        const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
 
-          // 5. Read outputs and average probabilities across TTA passes
-          wasmTensor1 = await outputTensors1[0].moveTo("wasm");
-          wasmTensor2 = await outputTensors2[0].moveTo("wasm");
-          const outputData1 = wasmTensor1.toTypedArray();
-          const outputData2 = wasmTensor2.toTypedArray();
-          
-          // Pass 1 Softmax
-          const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
-          const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
-          const probs1 = expValues1.map(val => (val as number) / sumExp1);
-
-          // Pass 2 Softmax
-          const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
-          const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
-          const probs2 = expValues2.map(val => (val as number) / sumExp2);
-
-          // Average predictions
-          const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
-
-          // Sort outputs
-          resultsArray = CONDITIONS.map((cond, idx) => ({
-            condition: cond.id,
-            confidence: probabilities[idx]
-          })).sort((a, b) => b.confidence - a.confidence);
-        } finally {
-          try {
-            if (inputTensor1?.delete) inputTensor1.delete();
-            if (inputTensor2?.delete) inputTensor2.delete();
-            if (Array.isArray(outputTensors1)) outputTensors1.forEach(t => t?.delete && t.delete());
-            if (Array.isArray(outputTensors2)) outputTensors2.forEach(t => t?.delete && t.delete());
-            if (wasmTensor1?.delete) wasmTensor1.delete();
-            if (wasmTensor2?.delete) wasmTensor2.delete();
-          } catch (e) {
-            console.warn("Tensor disposal cleanup warning:", e);
-          }
-        }
-      } else {
-        console.warn("Running fail-safe clinical feature classifier fallback...");
-        // Color & Structural Lesion Classifier Fallback
-        let rSum = 0, gSum = 0, bSum = 0, pixCount = 0;
-        for (let i = 0; i < 224 * 224; i++) {
-          if (data[i * 4 + 3] > 0) {
-            rSum += data[i * 4];
-            gSum += data[i * 4 + 1];
-            bSum += data[i * 4 + 2];
-            pixCount++;
-          }
-        }
-        const avgR = rSum / (pixCount || 1);
-        const avgG = gSum / (pixCount || 1);
-        const avgB = bSum / (pixCount || 1);
-        const redRatio = avgR / (avgG + avgB + 1);
-
-        let scores: Record<string, number> = {
-          MEL: 0.12, NV: 0.58, BCC: 0.08, BKL: 0.10, AK: 0.04, DF: 0.03, VASC: 0.03, SCC: 0.02
-        };
-
-        if (redRatio > 1.2 && avgR > 120 && avgB > 80) {
-          scores = { VASC: 0.88, NV: 0.06, BKL: 0.03, MEL: 0.01, BCC: 0.01, AK: 0.005, DF: 0.003, SCC: 0.002 };
-        } else if (computedAsymmetry > 45 && avgR < 90 && avgG < 90 && avgB < 90) {
-          scores = { MEL: 0.82, NV: 0.10, BCC: 0.04, BKL: 0.02, AK: 0.01, DF: 0.005, VASC: 0.003, SCC: 0.002 };
-        } else if (avgR < 110 && avgG < 100 && avgB < 90) {
-          scores = { NV: 0.85, BKL: 0.08, MEL: 0.04, BCC: 0.01, AK: 0.01, DF: 0.005, VASC: 0.003, SCC: 0.002 };
-        }
-
-        resultsArray = CONDITIONS.map((cond) => ({
+        // Sort outputs
+        resultsArray = CONDITIONS.map((cond, idx) => ({
           condition: cond.id,
-          confidence: scores[cond.id] || 0.05
+          confidence: probabilities[idx]
         })).sort((a, b) => b.confidence - a.confidence);
+
+        prediction = resultsArray[0].condition;
+        confidence = resultsArray[0].confidence;
+
+        setResults({
+          prediction,
+          confidence,
+          top3: resultsArray.slice(0, 3)
+        });
+      } finally {
+        // Explicitly dispose all input and output tensors across all passes to prevent WASM heap memory leaks
+        try {
+          if (inputTensor1?.delete) inputTensor1.delete();
+          if (inputTensor2?.delete) inputTensor2.delete();
+          if (Array.isArray(outputTensors1)) {
+            outputTensors1.forEach(t => t?.delete && t.delete());
+          }
+          if (Array.isArray(outputTensors2)) {
+            outputTensors2.forEach(t => t?.delete && t.delete());
+          }
+          if (wasmTensor1?.delete) wasmTensor1.delete();
+          if (wasmTensor2?.delete) wasmTensor2.delete();
+        } catch (e) {
+          console.warn("Tensor disposal cleanup warning:", e);
+        }
       }
-
-      prediction = resultsArray[0].condition;
-      confidence = resultsArray[0].confidence;
-
-      setResults({
-        prediction,
-        confidence,
-        top3: resultsArray.slice(0, 3)
-      });
 
       // 6. Save to local scan history
       // Create a small thumbnail to save in history
@@ -671,6 +612,7 @@ export default function DermoAIPage() {
         setHistory(updatedHistory);
         localStorage.setItem("dermoai_scan_history", JSON.stringify(updatedHistory));
       }
+
     } catch (err) {
       console.error("Inference processing error:", err);
       alert(
@@ -1765,6 +1707,4 @@ export default function DermoAIPage() {
       </footer>
     </div>
   );
-}
-}
 }
