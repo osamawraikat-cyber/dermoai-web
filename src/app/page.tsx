@@ -217,74 +217,44 @@ export default function DermoAIPage() {
     }
   }, [showContour, capturedImage, results]);
 
-  // Initialize LiteRT.js client-side
+  // Initialize ONNX Runtime Web client-side
   useEffect(() => {
-    async function initLiteRt() {
+    async function initOrt() {
       try {
         setLitertLoading(true);
-        console.log("Loading LiteRT.js from CDN...");
+        console.log("Loading ONNX Runtime Web engine...");
         
-        // Bypass Next.js/Turbopack import interceptor by using a runtime function constructor
-        const importModule = new Function("url", "return import(url)");
-        const litert = await importModule("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/+esm");
-        litertLibRef.current = litert;
+        const ort = await import("onnxruntime-web");
+        ort.env.wasm.numThreads = 1;
         
-        // Compile the WASM runtime pointing to CDN hosted WASM files
-        await litert.loadLiteRt("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm/");
+        console.log("Initializing ConvNeXt ONNX session with WebGL acceleration...");
+        let session: any = null;
+        try {
+          session = await ort.InferenceSession.create("/models/dermoai_v2_convnext_quant.onnx", {
+            executionProviders: ["webgl", "wasm"]
+          });
+        } catch (e1) {
+          console.warn("WebGL provider init warning, falling back to WASM CPU provider:", e1);
+          session = await ort.InferenceSession.create("/models/dermoai_v2_convnext_quant.onnx", {
+            executionProviders: ["wasm"]
+          });
+        }
+
+        modelRef.current = session;
+        litertLibRef.current = ort;
         setLitertLoaded(true);
-        console.log("LiteRT WebAssembly runtime loaded.");
-        
-        // Load model in parallel binary chunks (<10MB each for Cloudflare compatibility)
-        let combined: Uint8Array | null = null;
-        try {
-          const [res1, res2, res3] = await Promise.all([
-            fetch("/models/model_chunk_1.jpg"),
-            fetch("/models/model_chunk_2.jpg"),
-            fetch("/models/model_chunk_3.jpg")
-          ]);
-          if (res1.ok && res2.ok && res3.ok) {
-            const [buf1, buf2, buf3] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer(), res3.arrayBuffer()]);
-            console.log(`Model chunks fetched (${buf1.byteLength} + ${buf2.byteLength} + ${buf3.byteLength} bytes). Assembling in memory...`);
-            combined = new Uint8Array(buf1.byteLength + buf2.byteLength + buf3.byteLength);
-            combined.set(new Uint8Array(buf1), 0);
-            combined.set(new Uint8Array(buf2), buf1.byteLength);
-            combined.set(new Uint8Array(buf3), buf1.byteLength + buf2.byteLength);
-          } else {
-            console.warn("Chunk fetch HTTP status:", res1.status, res2.status, res3.status);
-          }
-        } catch (chunkErr) {
-          console.warn("Chunk fetch failed:", chunkErr);
-        }
-
-        if (!combined) {
-          throw new Error("Could not load AI model chunks from server.");
-        }
-
-        let compiledModel: any = null;
-        try {
-          console.log("Attempting TFLite compilation with WebGPU acceleration...");
-          compiledModel = await litert.loadAndCompile(combined, { accelerator: "webgpu" });
-        } catch (gpuErr) {
-          console.warn("WebGPU acceleration unavailable on this device. Falling back to LiteRT WASM runtime:", gpuErr);
-          try {
-            compiledModel = await litert.loadAndCompile(combined);
-          } catch (e2) {
-            compiledModel = await litert.loadAndCompile(combined.buffer);
-          }
-        }
-
-        modelRef.current = compiledModel;
-        console.log("TFLite Model compiled successfully.");
+        console.log("ONNX ConvNeXt Neural Session compiled and ready!");
+        setLitertError(null);
       } catch (err: any) {
-        console.error("Failed to initialize LiteRT.js:", err);
-        setLitertError(err?.message || "Failed to load AI model.");
+        console.error("Failed to initialize ONNX Runtime Web:", err);
+        setLitertError(err?.message || "Failed to load ONNX AI model.");
       } finally {
         setLitertLoading(false);
         setModelCompiling(false);
       }
     }
     
-    initLiteRt();
+    initOrt();
   }, []);
 
   // Enumerate cameras
@@ -480,74 +450,59 @@ export default function DermoAIPage() {
       let confidence = 0;
 
       if (useLocalModel && modelRef.current && litertLibRef.current) {
-        // 3. Create LiteRT input tensor (Pass 1: Original Image)
-        const { Tensor } = litertLibRef.current;
-        const inputTensor1 = new Tensor(floatData, [1, 224, 224, 3]);
+        const ort = litertLibRef.current;
+        console.log("Running ONNX ConvNeXt inference with 2-Pass TTA...");
+        
+        // NCHW format for ONNX: [1, 3, 224, 224]
+        const nchwData = new Float32Array(1 * 3 * 224 * 224);
+        const mean = [0.485, 0.456, 0.406];
+        const std = [0.229, 0.224, 0.225];
 
-        // Create Pass 2: Horizontally Flipped TTA Tensor
-        const floatDataTTA = new Float32Array(1 * 224 * 224 * 3);
-        for (let y = 0; y < 224; y++) {
-          for (let x = 0; x < 224; x++) {
-            const origIdx = (y * 224 + x) * 3;
-            const flipIdx = (y * 224 + (223 - x)) * 3;
-            floatDataTTA[flipIdx] = floatData[origIdx];
-            floatDataTTA[flipIdx + 1] = floatData[origIdx + 1];
-            floatDataTTA[flipIdx + 2] = floatData[origIdx + 2];
+        for (let i = 0; i < 224 * 224; i++) {
+          const r = data[i * 4] / 255.0;
+          const g = data[i * 4 + 1] / 255.0;
+          const b = data[i * 4 + 2] / 255.0;
+
+          nchwData[i] = (r - mean[0]) / std[0]; // Channel 0 (Red)
+          nchwData[224 * 224 + i] = (g - mean[1]) / std[1]; // Channel 1 (Green)
+          nchwData[2 * 224 * 224 + i] = (b - mean[2]) / std[2]; // Channel 2 (Blue)
+        }
+
+        const inputTensor1 = new ort.Tensor("float32", nchwData, [1, 3, 224, 224]);
+        const outputMap1 = await modelRef.current.run({ input: inputTensor1 });
+        const outputData1 = outputMap1.output.data;
+
+        // Pass 2: Horizontally Flipped TTA Tensor
+        const nchwDataTTA = new Float32Array(1 * 3 * 224 * 224);
+        for (let c = 0; c < 3; c++) {
+          const channelOffset = c * 224 * 224;
+          for (let y = 0; y < 224; y++) {
+            for (let x = 0; x < 224; x++) {
+              const origIdx = channelOffset + y * 224 + x;
+              const flipIdx = channelOffset + y * 224 + (223 - x);
+              nchwDataTTA[flipIdx] = nchwData[origIdx];
+            }
           }
         }
-        const inputTensor2 = new Tensor(floatDataTTA, [1, 224, 224, 3]);
+        const inputTensor2 = new ort.Tensor("float32", nchwDataTTA, [1, 3, 224, 224]);
+        const outputMap2 = await modelRef.current.run({ input: inputTensor2 });
+        const outputData2 = outputMap2.output.data;
 
-        // 4. Run local inference with Test-Time Augmentation (TTA)
-        console.log("Running on-device inference with 2-Pass TTA...");
-        let outputTensors1: any = null;
-        let outputTensors2: any = null;
-        let wasmTensor1: any = null;
-        let wasmTensor2: any = null;
+        // Softmax & 2-Pass TTA Average
+        const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
+        const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
+        const probs1 = expValues1.map(val => (val as number) / sumExp1);
 
-        try {
-          outputTensors1 = await modelRef.current.run(inputTensor1);
-          outputTensors2 = await modelRef.current.run(inputTensor2);
+        const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
+        const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
+        const probs2 = expValues2.map(val => (val as number) / sumExp2);
 
-          // 5. Read outputs and average probabilities across TTA passes
-          wasmTensor1 = await outputTensors1[0].moveTo("wasm");
-          wasmTensor2 = await outputTensors2[0].moveTo("wasm");
-          const outputData1 = wasmTensor1.toTypedArray();
-          const outputData2 = wasmTensor2.toTypedArray();
-          
-          // Pass 1 Softmax
-          const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
-          const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
-          const probs1 = expValues1.map(val => (val as number) / sumExp1);
+        const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
 
-          // Pass 2 Softmax
-          const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
-          const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
-          const probs2 = expValues2.map(val => (val as number) / sumExp2);
-
-          // Average predictions
-          const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
-
-          // Sort outputs
-          resultsArray = CONDITIONS.map((cond, idx) => ({
-            condition: cond.id,
-            confidence: probabilities[idx]
-          })).sort((a, b) => b.confidence - a.confidence);
-        } finally {
-          try {
-            if (inputTensor1?.delete) inputTensor1.delete();
-            if (inputTensor2?.delete) inputTensor2.delete();
-            if (Array.isArray(outputTensors1)) {
-              outputTensors1.forEach(t => t?.delete && t.delete());
-            }
-            if (Array.isArray(outputTensors2)) {
-              outputTensors2.forEach(t => t?.delete && t.delete());
-            }
-            if (wasmTensor1?.delete) wasmTensor1.delete();
-            if (wasmTensor2?.delete) wasmTensor2.delete();
-          } catch (e) {
-            console.warn("Tensor disposal cleanup warning:", e);
-          }
-        }
+        resultsArray = CONDITIONS.map((cond, idx) => ({
+          condition: cond.id,
+          confidence: probabilities[idx]
+        })).sort((a, b) => b.confidence - a.confidence);
       } else {
         // Run Instant Serverless Failsafe API Route
         console.log("Calling instant /api/predict serverless route...");
