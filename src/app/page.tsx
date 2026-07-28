@@ -226,13 +226,15 @@ export default function DermoAIPage() {
         
         // Bypass Next.js/Turbopack import interceptor by using a runtime function constructor
         const importModule = new Function("url", "return import(url)");
-        const litert = await importModule("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/+esm");
+        const litertModule = await importModule("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/+esm");
+        const litert = litertModule.loadAndCompile ? litertModule : (litertModule.default || litertModule);
         litertLibRef.current = litert;
         
         // Compile the WASM runtime pointing to CDN hosted WASM files
+        const loadLiteRtFn = litert.loadLiteRt || litert.default?.loadLiteRt;
         try {
-          if (typeof litert.loadLiteRt === "function") {
-            await litert.loadLiteRt("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm");
+          if (typeof loadLiteRtFn === "function") {
+            await loadLiteRtFn("https://cdn.jsdelivr.net/npm/@litertjs/core@2.5.2/wasm");
           }
         } catch (wasmErr: any) {
           if (wasmErr?.message?.includes("already loading") || wasmErr?.message?.includes("already loaded")) {
@@ -270,25 +272,38 @@ export default function DermoAIPage() {
           throw new Error("Could not load AI model chunks from server.");
         }
 
+        const loadAndCompileFn = litert.loadAndCompile || litert.default?.loadAndCompile;
+        if (typeof loadAndCompileFn !== "function") {
+          throw new Error(`loadAndCompile function missing on module keys: ${Object.keys(litertModule).join(", ")}`);
+        }
+
         let compiledModel: any = null;
-        try {
-          console.log("Attempting TFLite compilation with WebGPU acceleration...");
+        const attempts = [
+          { source: combined, opts: { accelerator: "webgpu" } },
+          { source: combined.buffer, opts: { accelerator: "webgpu" } },
+          { source: combined, opts: {} },
+          { source: combined.buffer, opts: {} }
+        ];
+
+        let lastErr: any = null;
+        for (const attempt of attempts) {
           try {
-            compiledModel = await litert.loadAndCompile(combined, { accelerator: "webgpu" });
-          } catch (e1) {
-            compiledModel = await litert.loadAndCompile(combined.buffer, { accelerator: "webgpu" });
+            console.log("Attempting LiteRT compilation...", attempt.opts);
+            compiledModel = await loadAndCompileFn(attempt.source, attempt.opts);
+            if (compiledModel) break;
+          } catch (e) {
+            console.warn("LiteRT compile attempt failed:", e);
+            lastErr = e;
           }
-        } catch (gpuErr) {
-          console.warn("WebGPU acceleration unavailable on this device. Falling back to LiteRT WASM runtime:", gpuErr);
-          try {
-            compiledModel = await litert.loadAndCompile(combined);
-          } catch (e2) {
-            compiledModel = await litert.loadAndCompile(combined.buffer);
-          }
+        }
+
+        if (!compiledModel) {
+          throw new Error(`Model compilation failed: ${lastErr?.message || lastErr}`);
         }
 
         modelRef.current = compiledModel;
         console.log("TFLite Model compiled successfully.");
+        setLitertError(null);
       } catch (err: any) {
         console.error("Failed to initialize LiteRT.js:", err);
         setLitertError(err?.message || "Failed to load AI model.");
