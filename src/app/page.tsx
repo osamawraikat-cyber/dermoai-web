@@ -996,31 +996,19 @@ export default function DermoAIPage() {
                 </>
               )}
 
-              {/* Camera Error Message with Direct Upload Fallback */}
-              {cameraError && !capturedImage && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-slate-950">
-                  <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-3 text-lg">
-                    📷
-                  </div>
-                  <p className="text-sm font-semibold max-w-xs text-slate-300 mb-4">{cameraError}</p>
-                  <label className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-xs font-bold cursor-pointer transition duration-200 shadow-lg shadow-teal-600/20">
-                    <span>{lang === "ar" ? "تحميل صورة من الملفات" : lang === "tr" ? "Dosyadan Fotoğraf Yükle" : "Upload Lesion Photo"}</span>
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      onChange={handleImageUpload} 
-                      className="hidden" 
-                    />
-                  </label>
-                </div>
-              )}
-
-              {/* Fallback Static Upload Prompt */}
-              {!cameraActive && !capturedImage && !cameraError && (
+              {/* Fallback Static Upload & Camera Prompt */}
+              {!cameraActive && !capturedImage && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-slate-950">
                   <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mb-4 text-2xl">
                     📷
                   </div>
+
+                  {cameraError && (
+                    <div className="mb-4 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium max-w-xs">
+                      {cameraError}
+                    </div>
+                  )}
+
                   <button 
                     onClick={() => startCamera()}
                     className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 font-bold text-sm transition duration-200 shadow-lg shadow-teal-600/20"
