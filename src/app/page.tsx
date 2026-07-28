@@ -474,40 +474,65 @@ export default function DermoAIPage() {
 
       // 4. Run local inference with Test-Time Augmentation (TTA)
       console.log("Running on-device inference with 2-Pass TTA...");
-      const outputTensors1 = await modelRef.current.run(inputTensor1);
-      const outputTensors2 = await modelRef.current.run(inputTensor2);
+      let outputTensors1: any = null;
+      let outputTensors2: any = null;
+      let wasmTensor1: any = null;
+      let wasmTensor2: any = null;
 
-      // 5. Read outputs and average probabilities across TTA passes
-      const outputData1 = (await outputTensors1[0].moveTo("wasm")).toTypedArray();
-      const outputData2 = (await outputTensors2[0].moveTo("wasm")).toTypedArray();
-      
-      // Pass 1 Softmax
-      const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
-      const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
-      const probs1 = expValues1.map(val => (val as number) / sumExp1);
+      let resultsArray: Array<{ condition: string; confidence: number }> = [];
+      let prediction = "";
+      let confidence = 0;
 
-      // Pass 2 Softmax
-      const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
-      const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
-      const probs2 = expValues2.map(val => (val as number) / sumExp2);
+      try {
+        outputTensors1 = await modelRef.current.run(inputTensor1);
+        outputTensors2 = await modelRef.current.run(inputTensor2);
 
-      // Average predictions
-      const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
+        // 5. Read outputs and average probabilities across TTA passes
+        wasmTensor1 = await outputTensors1[0].moveTo("wasm");
+        wasmTensor2 = await outputTensors2[0].moveTo("wasm");
+        const outputData1 = wasmTensor1.toTypedArray();
+        const outputData2 = wasmTensor2.toTypedArray();
+        
+        // Pass 1 Softmax
+        const expValues1 = Array.from(outputData1).map(val => Math.exp(val as number));
+        const sumExp1 = expValues1.reduce((a, b) => a + b, 0);
+        const probs1 = expValues1.map(val => (val as number) / sumExp1);
 
-      // Sort outputs
-      const resultsArray = CONDITIONS.map((cond, idx) => ({
-        condition: cond.id,
-        confidence: probabilities[idx]
-      })).sort((a, b) => b.confidence - a.confidence);
+        // Pass 2 Softmax
+        const expValues2 = Array.from(outputData2).map(val => Math.exp(val as number));
+        const sumExp2 = expValues2.reduce((a, b) => a + b, 0);
+        const probs2 = expValues2.map(val => (val as number) / sumExp2);
 
-      const prediction = resultsArray[0].condition;
-      const confidence = resultsArray[0].confidence;
+        // Average predictions
+        const probabilities = probs1.map((p, i) => (p + probs2[i]) / 2.0);
 
-      setResults({
-        prediction,
-        confidence,
-        top3: resultsArray.slice(0, 3)
-      });
+        // Sort outputs
+        resultsArray = CONDITIONS.map((cond, idx) => ({
+          condition: cond.id,
+          confidence: probabilities[idx]
+        })).sort((a, b) => b.confidence - a.confidence);
+
+        prediction = resultsArray[0].condition;
+        confidence = resultsArray[0].confidence;
+
+        setResults({
+          prediction,
+          confidence,
+          top3: resultsArray.slice(0, 3)
+        });
+      } finally {
+        // Explicitly dispose tensors to prevent WASM heap memory leaks on mobile devices
+        try {
+          if (inputTensor1?.delete) inputTensor1.delete();
+          if (inputTensor2?.delete) inputTensor2.delete();
+          if (outputTensors1?.[0]?.delete) outputTensors1[0].delete();
+          if (outputTensors2?.[0]?.delete) outputTensors2[0].delete();
+          if (wasmTensor1?.delete) wasmTensor1.delete();
+          if (wasmTensor2?.delete) wasmTensor2.delete();
+        } catch (e) {
+          console.warn("Tensor disposal cleanup warning:", e);
+        }
+      }
 
       // 6. Save to local scan history
       // Create a small thumbnail to save in history
