@@ -521,12 +521,16 @@ export default function DermoAIPage() {
           top3: resultsArray.slice(0, 3)
         });
       } finally {
-        // Explicitly dispose tensors to prevent WASM heap memory leaks on mobile devices
+        // Explicitly dispose all input and output tensors across all passes to prevent WASM heap memory leaks
         try {
           if (inputTensor1?.delete) inputTensor1.delete();
           if (inputTensor2?.delete) inputTensor2.delete();
-          if (outputTensors1?.[0]?.delete) outputTensors1[0].delete();
-          if (outputTensors2?.[0]?.delete) outputTensors2[0].delete();
+          if (Array.isArray(outputTensors1)) {
+            outputTensors1.forEach(t => t?.delete && t.delete());
+          }
+          if (Array.isArray(outputTensors2)) {
+            outputTensors2.forEach(t => t?.delete && t.delete());
+          }
           if (wasmTensor1?.delete) wasmTensor1.delete();
           if (wasmTensor2?.delete) wasmTensor2.delete();
         } catch (e) {
