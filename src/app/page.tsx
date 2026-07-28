@@ -227,15 +227,28 @@ export default function DermoAIPage() {
         const ort = await import("onnxruntime-web");
         ort.env.wasm.numThreads = 1;
         
+        console.log("Fetching ONNX model chunks (<15MB each for Cloudflare Pages compatibility)...");
+        const [res1, res2] = await Promise.all([
+          fetch("/models/dermoai_v2_convnext_chunk_1.onnx"),
+          fetch("/models/dermoai_v2_convnext_chunk_2.onnx")
+        ]);
+        if (!res1.ok || !res2.ok) {
+          throw new Error(`Failed to fetch ONNX model chunks (HTTP ${res1.status}, ${res2.status})`);
+        }
+        const [buf1, buf2] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer()]);
+        const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
+        combined.set(new Uint8Array(buf1), 0);
+        combined.set(new Uint8Array(buf2), buf1.byteLength);
+
         console.log("Initializing ConvNeXt ONNX session with WebGL acceleration...");
         let session: any = null;
         try {
-          session = await ort.InferenceSession.create("/models/dermoai_v2_convnext_quant.onnx", {
+          session = await ort.InferenceSession.create(combined, {
             executionProviders: ["webgl", "wasm"]
           });
         } catch (e1) {
           console.warn("WebGL provider init warning, falling back to WASM CPU provider:", e1);
-          session = await ort.InferenceSession.create("/models/dermoai_v2_convnext_quant.onnx", {
+          session = await ort.InferenceSession.create(combined, {
             executionProviders: ["wasm"]
           });
         }
