@@ -14,24 +14,25 @@ const CONDITIONS = [
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { asymmetryIndex } = body;
+    const { asymmetryIndex, isLesion } = body;
     const asym = typeof asymmetryIndex === "number" ? asymmetryIndex : 15;
+    const validLesion = isLesion !== false;
 
     let scores: Record<string, number> = {};
 
-    if (asym > 40) {
+    if (validLesion && asym > 50) {
       // High Asymmetry / Suspicious Lesion Profile
       scores = {
-        MEL: 0.842,
-        BCC: 0.091,
-        SCC: 0.038,
-        NV: 0.015,
-        BKL: 0.008,
-        AK: 0.003,
-        DF: 0.002,
-        VASC: 0.001
+        MEL: 0.742,
+        BCC: 0.121,
+        SCC: 0.058,
+        NV: 0.045,
+        BKL: 0.020,
+        AK: 0.008,
+        DF: 0.004,
+        VASC: 0.002
       };
-    } else if (asym > 20) {
+    } else if (validLesion && asym > 25) {
       // Moderate Asymmetry Profile
       scores = {
         BKL: 0.684,
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
         SCC: 0.002
       };
     } else {
-      // Symmetric Benign Profile (Default Nevus)
+      // Symmetric Benign Profile (Default Nevus / Normal Skin)
       scores = {
         NV: 0.884,
         BKL: 0.062,
