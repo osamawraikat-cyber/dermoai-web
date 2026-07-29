@@ -237,18 +237,24 @@ export default function DermoAIPage() {
         if (!ort) throw new Error("ONNX Runtime Web library not found on window object.");
         ort.env.wasm.numThreads = 1;
         
-        console.log("Fetching ONNX model chunks (<15MB each for Cloudflare Pages compatibility)...");
-        const [res1, res2] = await Promise.all([
+        console.log("Fetching Stage 2 SOTA model chunks (<15MB each for Cloudflare Pages compatibility)...");
+        const [res1, res2, res3, res4] = await Promise.all([
           fetch("/models/dermoai_v2_convnext_chunk_1.onnx"),
-          fetch("/models/dermoai_v2_convnext_chunk_2.onnx")
+          fetch("/models/dermoai_v2_convnext_chunk_2.onnx"),
+          fetch("/models/dermoai_v2_convnext_chunk_3.onnx"),
+          fetch("/models/dermoai_v2_convnext_chunk_4.onnx")
         ]);
-        if (!res1.ok || !res2.ok) {
-          throw new Error(`Failed to fetch ONNX model chunks (HTTP ${res1.status}, ${res2.status})`);
+        if (!res1.ok || !res2.ok || !res3.ok || !res4.ok) {
+          throw new Error("Failed to fetch Stage 2 SOTA model chunks from server.");
         }
-        const [buf1, buf2] = await Promise.all([res1.arrayBuffer(), res2.arrayBuffer()]);
-        const combined = new Uint8Array(buf1.byteLength + buf2.byteLength);
+        const [buf1, buf2, buf3, buf4] = await Promise.all([
+          res1.arrayBuffer(), res2.arrayBuffer(), res3.arrayBuffer(), res4.arrayBuffer()
+        ]);
+        const combined = new Uint8Array(buf1.byteLength + buf2.byteLength + buf3.byteLength + buf4.byteLength);
         combined.set(new Uint8Array(buf1), 0);
         combined.set(new Uint8Array(buf2), buf1.byteLength);
+        combined.set(new Uint8Array(buf3), buf1.byteLength + buf2.byteLength);
+        combined.set(new Uint8Array(buf4), buf1.byteLength + buf2.byteLength + buf3.byteLength);
 
         console.log("Initializing ConvNeXt ONNX session with WebGL acceleration...");
         let session: any = null;
